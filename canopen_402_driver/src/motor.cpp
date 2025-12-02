@@ -204,6 +204,8 @@ bool Motor402::switchState(const State402::InternalState & target)
       }
       return false;
     }
+    // Delay to allow motor to stabilize, matching the python script behavior
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
   }
   return state == target;
 }
@@ -277,8 +279,10 @@ void Motor402::handleWrite()
   if (start_fault_reset_.exchange(false))
   {
     RCLCPP_INFO(rclcpp::get_logger("canopen_402_driver"), "Fault reset");
+    // Modified to match user's python script: send 0x80 directly and wait
     this->driver->universal_set_value<uint16_t>(
-      control_word_entry_index, 0x0, control_word_ & ~(1 << Command402::CW_Fault_Reset));
+      control_word_entry_index, 0x0, 0x80);
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
   }
   else
   {
@@ -361,10 +365,20 @@ bool Motor402::handleInit()
     std::cout << "Could not read motor state" << std::endl;
     return false;
   }
+
+  // Set default mode to Profile Position (1) before enabling
+  driver->universal_set_value<int8_t>(op_mode_index, 0x0, 1);
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+  // Explicit Fault Reset sequence matching Python script
+  RCLCPP_INFO(rclcpp::get_logger("canopen_402_driver"), "Init: Clear Faults");
+  driver->universal_set_value<uint16_t>(control_word_entry_index, 0x0, 0x80);
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+
   {
     std::scoped_lock lock(cw_mutex_);
     control_word_ = 0;
-    start_fault_reset_ = true;
+    start_fault_reset_ = false;
   }
   RCLCPP_INFO(rclcpp::get_logger("canopen_402_driver"), "Init: Enable");
   if (!switchState(State402::Operation_Enable))
@@ -373,6 +387,11 @@ bool Motor402::handleInit()
     return false;
   }
 
+  // Skip Homing as requested by user
+  RCLCPP_INFO(rclcpp::get_logger("canopen_402_driver"), "Init: Homing skipped by user configuration");
+  return true;
+
+  /*
   ModeSharedPtr m = allocMode(MotorBase::Homing);
   if (!m)
   {
@@ -405,6 +424,7 @@ bool Motor402::handleInit()
     std::cout << "Could not enter no mode" << std::endl;
     return false;
   }
+  */
   return true;
 }
 bool Motor402::handleShutdown()
